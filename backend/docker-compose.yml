@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # --- 1. Database Service ---
+  ticket-db:
+    image: postgres:15-alpine
+    container_name: ticket_db_container
+    environment:
+      POSTGRES_DB: ticket_db
+      POSTGRES_USER: ticket_admin
+      POSTGRES_PASSWORD: password
+    volumes:
+      - ticket_pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - ticket_network
+    restart: unless-stopped
+
+  # --- 2. PgAdmin Service (ตัวจัดการ DB) ---
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ticket_pgadmin_container
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@ticket.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    volumes:
+      - ticket_pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - ticket-db
+    networks:
+      - ticket_network
+    restart: unless-stopped
+
+  # --- 3. Redis Service (เพิ่มใหม่ตามแผน!) ---
+  ticket-redis:
+    image: redis:alpine
+    container_name: ticket_redis_container
+    ports:
+      - "6379:6379"
+    volumes:
+      - ticket_redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - ticket_network
+    restart: unless-stopped
+
+  # --- 4. API Service (Go Backend) ---
+  ticket-api:
+    build:
+      context: .              # จุดที่แก้ 1: ใช้ . เพราะไฟล์ Dockerfile.dev อยู่ที่เดียวกับ docker-compose
+      dockerfile: Dockerfile.dev # จุดที่แก้ 2: ระบุชื่อไฟล์ Dockerfile ให้ถูก
+    container_name: ticket_api_container
+    ports:
+      - "8081:8080"           # เข้าเว็บผ่าน http://localhost:8081
+    environment:
+      - DB_HOST=ticket-db
+      - DB_USER=ticket_admin
+      - DB_PASSWORD=password
+      - DB_NAME=ticket_db
+      - DB_PORT=5432
+      - REDIS_HOST=ticket-redis
+      - REDIS_PORT=6379
+    depends_on:
+      - ticket-db
+      - ticket-redis
+    volumes:
+      - .:/app                # จุดที่แก้ 3: Mount โฟลเดอร์ปัจจุบัน (.) เข้าไปที่ /app
+      - /app/tmp              # จุดสำคัญ: ไม่ต้อง Sync โฟลเดอร์ tmp กลับมา (ป้องกัน Permission error)
+    networks:
+      - ticket_network
+
+volumes:
+  ticket_pg_data:
+  ticket_pgadmin_data:
+  ticket_redis_data:
+
+networks:
+  ticket_network:
+    driver: bridge
