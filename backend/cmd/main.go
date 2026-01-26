@@ -33,7 +33,13 @@ func main() {
 	// ----------------------------------------
 
 	// 2. สร้างตาราง (Migration)
-	db.AutoMigrate(&domain.User{}, &domain.Event{}, &domain.Seat{})
+	db.AutoMigrate(
+		&domain.User{},
+		&domain.Event{},
+		&domain.Seat{},
+		&domain.Booking{},
+		&domain.BookingItem{},
+	)
 
 	// 3. เตรียมคนงาน (Repo)
 	eventRepo := repositories.NewPostgresEventRepo(db)

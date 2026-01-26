@@ -11,6 +11,8 @@ tmp_dir = "tmp"
   include_ext = ["go", "tpl", "tmpl", "html"]
   # โฟลเดอร์ที่จะไม่สนใจ
   exclude_dir = ["assets", "tmp", "vendor", "testdata"]
+  # เปิด Polling สำหรับ Windows/Docker (แก้ปัญหา Air ไม่ Reload)
+  poll = true
 
 [log]
   # แสดงเวลาใน log ด้วย จะได้รู้ว่ามันรีสตาร์ทตอนไหน

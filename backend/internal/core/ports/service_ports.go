@@ -1,0 +1,9 @@
+package ports
+
+import "github.com/ticket-backend/internal/core/domain"
+
+// BookingService คือข้อตกลงว่า "ระบบจอง" ต้องทำอะไรได้บ้าง
+// (ในที่นี้คือ ต้องมีฟังก์ชัน CreateBooking)
+type BookingService interface {
+	CreateBooking(userID uint, seatIDs []uint) (*domain.Booking, error)
+}
