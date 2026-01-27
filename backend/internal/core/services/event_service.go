@@ -8,20 +8,20 @@ import (
 	"github.com/ticket-backend/internal/core/ports"
 )
 
-type eventService struct {
+type EventService struct {
 	eventRepo ports.EventRepository
 	seatRepo  ports.SeatRepository
 }
 
-func NewEventService(evtRepo ports.EventRepository, seatRepo ports.SeatRepository) *eventService {
-	return &eventService{
+func NewEventService(evtRepo ports.EventRepository, seatRepo ports.SeatRepository) *EventService {
+	return &EventService{
 		eventRepo: evtRepo,
 		seatRepo:  seatRepo,
 	}
 }
 
 // ฟังก์ชันเสกข้อมูล
-func (s *eventService) SeedData() error {
+func (s *EventService) SeedData() error {
 	// 1. สร้างคอนเสิร์ต
 	event := domain.Event{
 		Name:     "Microservice Concert",

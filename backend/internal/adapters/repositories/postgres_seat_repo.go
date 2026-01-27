@@ -6,20 +6,20 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-type postgresSeatRepo struct {
+type PostgresSeatRepo struct {
 	db *gorm.DB
 }
 
-func NewPostgresSeatRepo(db *gorm.DB) *postgresSeatRepo {
-	return &postgresSeatRepo{db: db}
+func NewPostgresSeatRepo(db *gorm.DB) *PostgresSeatRepo {
+	return &PostgresSeatRepo{db: db}
 }
 
-func (r *postgresSeatRepo) Create(seat *domain.Seat) error {
+func (r *PostgresSeatRepo) Create(seat *domain.Seat) error {
 	return r.db.Create(seat).Error
 }
 
 // ฟังก์ชันค้นหาที่นั่งจาก ID
-func (r *postgresSeatRepo) FindByID(id uint) (*domain.Seat, error) {
+func (r *PostgresSeatRepo) FindByID(id uint) (*domain.Seat, error) {
 	var seat domain.Seat
 	if err := r.db.First(&seat, id).Error; err != nil {
 		return nil, err
@@ -28,13 +28,13 @@ func (r *postgresSeatRepo) FindByID(id uint) (*domain.Seat, error) {
 }
 
 // ฟังก์ชันอัปเดตสถานะที่นั่ง (เช่น เปลี่ยนจาก AVAILABLE -> LOCKED)
-func (r *postgresSeatRepo) Update(seat *domain.Seat) error {
+func (r *PostgresSeatRepo) Update(seat *domain.Seat) error {
 	return r.db.Save(seat).Error
 }
 
 // ฟังก์ชัน Lock ที่นั่ง (กันคนแย่งกัน)
 // รับ tx (Transaction) เข้ามา เพราะการ Lock ต้องทำใน Transaction เดียวกันเท่านั้น
-func (r *postgresSeatRepo) GetSeatWithLock(tx *gorm.DB, seatID uint) (*domain.Seat, error) {
+func (r *PostgresSeatRepo) GetSeatWithLock(tx *gorm.DB, seatID uint) (*domain.Seat, error) {
 	var seat domain.Seat
 
 	// คำสั่ง SQL: SELECT * FROM seats WHERE id = ? FOR UPDATE
