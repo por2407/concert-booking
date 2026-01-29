@@ -50,3 +50,7 @@ func (s *EventService) SeedData() error {
 	fmt.Println("✅ 50 Seats generated!")
 	return nil
 }
+
+func (s *EventService) GetEventInfo(eventID uint) (*domain.Event, error) {
+	return s.eventRepo.GetByIDWithSeats(eventID)
+}

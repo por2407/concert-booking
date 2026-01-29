@@ -7,3 +7,9 @@ import "github.com/ticket-backend/internal/core/domain"
 type BookingService interface {
 	CreateBooking(userID uint, seatIDs []uint) (*domain.Booking, error)
 }
+
+type EventService interface {
+	SeedData() error
+	// เพิ่มฟังก์ชันดึงข้อมูล
+	GetEventInfo(id uint) (*domain.Event, error)
+}

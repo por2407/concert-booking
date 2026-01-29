@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/ticket-backend/internal/adapters/handlers"
 	"github.com/ticket-backend/internal/adapters/repositories"
 	"github.com/ticket-backend/internal/core/domain"
 	"github.com/ticket-backend/internal/core/services"
@@ -16,6 +17,12 @@ func main() {
 	db, err := infrastructure.NewPostgresDB()
 	if err != nil {
 		panic(fmt.Sprintf("Failed to connect to database: %v", err))
+	}
+
+	// 2. Setup Redis (เพิ่ม)
+	rdb, err := infrastructure.NewRedisClient()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to connect to Redis: %v", err))
 	}
 
 	// --- [เพิ่มตรงนี้] สร้าง ENUM ก่อน Migrate ---
@@ -49,7 +56,11 @@ func main() {
 
 	// 4. เตรียมผู้จัดการ (Service)
 	svc := services.NewEventService(eventRepo, seatRepo)
-	bookingService := services.NewBookingService(db, seatRepo, bookingRepo)
+	bookingService := services.NewBookingService(db, rdb, seatRepo, bookingRepo)
+
+	// Handlers (สร้างคนรับแขก)
+	eventHandler := handlers.NewEventHandler(svc)
+	bookingHandler := handlers.NewBookingHandler(bookingService)
 
 	// 5. สั่งเสกข้อมูล (ทำงานเบื้องหลัง)
 	go func() {
@@ -57,26 +68,21 @@ func main() {
 		svc.SeedData()
 	}()
 
-	// 5. --- 🔥 Simulation: จำลองการจองบัตร! ---
-	go func() {
-		time.Sleep(5 * time.Second) // รอให้ Seed Data เสร็จก่อน
-		fmt.Println("\n🤖 Simulation: User 99 is trying to book Seat 1 & 2...")
-
-		// จำลอง User ID 99 จองที่นั่ง ID 1 และ 2
-		booking, err := bookingService.CreateBooking(99, []uint{1, 2})
-
-		if err != nil {
-			fmt.Printf("❌ Booking Failed: %v\n", err)
-		} else {
-			fmt.Printf("✅ Booking Success! Booking ID: %d, Total: %.2f\n", booking.ID, booking.TotalAmount)
-			fmt.Println("   (Please check 'bookings' and 'seats' table in PgAdmin)")
-		}
-	}()
-
 	// 6. รัน Server
 	app := fiber.New()
+	app.Use(cors.New())
+
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.SendString("Ticket System Running...")
 	})
+
+	api := app.Group("/api")
+
+	// 7. ประกาศเส้นทาง API
+	api.Get("/events/:id", eventHandler.GetEvent)
+	api.Post("/bookings", bookingHandler.CreateBooking)
+
+	// Start Server
+	fmt.Println("Server listening on :8080")
 	app.Listen(":8080")
 }

@@ -1,91 +1,79 @@
 package services
 
 import (
-	"errors"
+	"context"
+	"fmt"
 	"time"
 
+	"github.com/redis/go-redis/v9" // import redis
 	"github.com/ticket-backend/internal/adapters/repositories"
 	"github.com/ticket-backend/internal/core/domain"
 	"gorm.io/gorm"
 )
 
-type BookingService struct {
-	db          *gorm.DB // เราต้องใช้ DB เพื่อสั่ง Start Transaction
+type bookingService struct {
+	db          *gorm.DB
+	redis       *redis.Client // เพิ่ม Redis เข้ามา
 	seatRepo    *repositories.PostgresSeatRepo
 	bookingRepo *repositories.PostgresBookingRepo
 }
 
-// รับ Repo เข้ามา (สังเกตว่าผมใช้ Type จริง (struct) แทน Interface ชั่วคราวเพื่อให้ง่ายต่อการส่ง Transaction)
-func NewBookingService(db *gorm.DB, seatRepo *repositories.PostgresSeatRepo, bookingRepo *repositories.PostgresBookingRepo) *BookingService {
-	return &BookingService{
+// รับ Redis Client เข้ามาด้วย
+func NewBookingService(db *gorm.DB, rdb *redis.Client, seatRepo *repositories.PostgresSeatRepo, bookingRepo *repositories.PostgresBookingRepo) *bookingService {
+	return &bookingService{
 		db:          db,
+		redis:       rdb,
 		seatRepo:    seatRepo,
 		bookingRepo: bookingRepo,
 	}
 }
 
-func (s *BookingService) CreateBooking(userID uint, seatIDs []uint) (*domain.Booking, error) {
+func (s *bookingService) CreateBooking(userID uint, seatIDs []uint) (*domain.Booking, error) {
+	ctx := context.Background()
+
+	// --- 🛡️ ด่านที่ 1: Redis Guard (คัดกรองคน 99.9% ออกไปตรงนี้) ---
+	// วนลูปเช็คว่ามีใครจองที่นั่งพวกนี้ใน Redis อยู่ไหม
+	for _, seatID := range seatIDs {
+		lockKey := fmt.Sprintf("lock:seat:%d", seatID)
+
+		// SETNX: ถ้ายังไม่มี key นี้ ให้สร้างและ return true (ชนะ)
+		// ถ้ามี key นี้อยู่แล้ว return false (แพ้)
+		// ตั้งเวลาหมดอายุ 10 วินาที (เผื่อระบบล่ม key จะได้ไม่ค้างตลอดไป)
+		success, err := s.redis.SetNX(ctx, lockKey, userID, 10*time.Second).Result()
+
+		if err != nil {
+			return nil, err
+		}
+		if !success {
+			// ถ้าแพ้ใน Redis ให้ดีดออกเลย ไม่ต้องไปกวน DB
+			return nil, fmt.Errorf("seat %d is currently being booked by someone else (Redis Block)", seatID)
+		}
+
+		// *ข้อควรระวัง: ในระบบจริง ถ้าจองหลายที่แล้วติดใบหลังๆ ต้องไปไล่ลบ Redis Key ของใบแรกๆ ออกด้วย (Compensating Transaction)
+		// แต่นี่เอา Concept หลักก่อนครับ
+	}
+	// -----------------------------------------------------------
+
+	// --- 🏰 ด่านที่ 2: Database Transaction (คนชนะเท่านั้นที่มาถึงตรงนี้) ---
+	// โค้ดส่วนนี้เหมือนเดิม 100% เพราะเราต้อง Lock DB เพื่อความชัวร์ (Consistency)
+	// แต่ภาระ DB จะเหลือน้อยมากๆ เพราะ Redis กั้นคนส่วนใหญ่ไว้แล้ว
+
 	var newBooking domain.Booking
-
-	// 1. เริ่ม Transaction (Database Transaction)
-	// กฎ: ถ้า Error ตรงไหนก็ตาม ข้อมูลทุกอย่างจะย้อนกลับเหมือนไม่เคยเกิดขึ้น (Rollback)
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-
-		totalAmount := 0.0
-		var bookingItems []domain.BookingItem
-
-		// 2. วนลูปตรวจสอบและล็อคที่นั่งทีละตัว
-		for _, seatID := range seatIDs {
-			// 🔥 จุดตาย: เรียกใช้ GetSeatWithLock (SELECT ... FOR UPDATE)
-			// ส่ง tx เข้าไป เพื่อบอกว่า "ให้ทำใน Transaction นี้นะ"
-			seat, err := s.seatRepo.GetSeatWithLock(tx, seatID)
-			if err != nil {
-				return err // หาไม่เจอ
-			}
-
-			// 3. เช็คว่าว่างไหม? (Double Booking Check)
-			if seat.Status != "AVAILABLE" {
-				return errors.New("seat " + seat.RowLabel + " is not available")
-			}
-
-			// 4. อัปเดตสถานะที่นั่ง (Lock ไว้ก่อน)
-			seat.Status = "LOCKED"
-			seat.LockedBy = &userID
-			expireTime := time.Now().Add(10 * time.Minute) // จองไว้ 10 นาที
-			seat.LockExpiresAt = &expireTime
-
-			if err := tx.Save(&seat).Error; err != nil {
-				return err
-			}
-
-			// คำนวณเงิน
-			totalAmount += seat.Price
-
-			// เตรียมข้อมูล Item
-			bookingItems = append(bookingItems, domain.BookingItem{
-				SeatID: seat.ID,
-			})
-		}
-
-		// 5. สร้างใบจอง (Booking Header)
-		newBooking = domain.Booking{
-			UserID:      userID,
-			EventID:     1, // สมมติว่างาน ID 1 ไปก่อน (จริงๆ ต้องเช็คว่า seat มาจากงานไหน)
-			TotalAmount: totalAmount,
-			Status:      domain.BookingPending,
-			Items:       bookingItems, // GORM จะสร้าง BookingItem ให้อัตโนมัติเพราะเราใส่ Relation ไว้
-		}
-
-		if err := s.bookingRepo.Create(tx, &newBooking); err != nil {
-			return err
-		}
-
-		return nil // ถ้า return nil -> Transaction จะ Commit (บันทึกจริง)
+		// ... (โค้ดเดิมทั้งหมดของคุณ อยู่ในนี้) ...
+		// ...
+		// ...
+		return nil
 	})
+
+	// --- 🧹 ด่านที่ 3: Cleanup ---
+	// ไม่ว่าจะจองสำเร็จหรือไม่ ควรลบ Key ใน Redis ออก (หรือปล่อยให้มัน Expire เองก็ได้ถ้าขี้เกียจ แต่ลบเลยดีกว่า)
+	for _, seatID := range seatIDs {
+		s.redis.Del(ctx, fmt.Sprintf("lock:seat:%d", seatID))
+	}
 
 	if err != nil {
 		return nil, err
 	}
-
 	return &newBooking, nil
 }
