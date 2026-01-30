@@ -13,26 +13,47 @@ func NewBookingHandler(s ports.BookingService) *BookingHandler {
 	return &BookingHandler{bookingService: s}
 }
 
-// โครงสร้าง Request ที่จะรับจาก Frontend
-// หน้าตา JSON จะเป็น: { "user_id": 1, "seat_ids": [1, 2] }
-
 type createBookingRequest struct {
 	UserId  uint   `json:"user_id"`
 	SeatIds []uint `json:"seat_ids"`
 }
 
-// ฟังก์ชันที่จะถูกเรียกเมื่อมีคนยิง API เข้ามา
+type confirmBookingRequest struct {
+	BookingId uint `json:"booking_id"`
+}
+
+// 1. กดจอง (รอชำระเงิน)
 func (h *BookingHandler) CreateBooking(c *fiber.Ctx) error {
-	// 1. รับ JSON และแปลงเข้า Struct
 	var req createBookingRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
 	}
-	// 2. เรียกใช้ Service (Logic การจองที่เราทำไปแล้ว)
-	booking, err := h.bookingService.CreateBooking(req.UserId, req.SeatIds)
+
+	booking, err := h.bookingService.CreatePendingBooking(req.UserId, req.SeatIds)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Booking created successfully", "booking": booking})
 
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Booking pending, please pay within 10 minutes",
+		"booking": booking,
+	})
+}
+
+// 2. ยืนยันการชำระเงิน (Sold)
+func (h *BookingHandler) ConfirmBooking(c *fiber.Ctx) error {
+	var req confirmBookingRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	booking, err := h.bookingService.ConfirmPayment(req.BookingId)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"message": "Payment confirmed, seats are now SOLD",
+		"booking": booking,
+	})
 }

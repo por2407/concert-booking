@@ -5,21 +5,20 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9" // import redis
-	"github.com/ticket-backend/internal/adapters/repositories"
+	"github.com/redis/go-redis/v9"
 	"github.com/ticket-backend/internal/core/domain"
+	"github.com/ticket-backend/internal/core/ports"
 	"gorm.io/gorm"
 )
 
 type bookingService struct {
 	db          *gorm.DB
-	redis       *redis.Client // เพิ่ม Redis เข้ามา
-	seatRepo    *repositories.PostgresSeatRepo
-	bookingRepo *repositories.PostgresBookingRepo
+	redis       *redis.Client
+	seatRepo    ports.SeatRepository
+	bookingRepo ports.BookingRepository
 }
 
-// รับ Redis Client เข้ามาด้วย
-func NewBookingService(db *gorm.DB, rdb *redis.Client, seatRepo *repositories.PostgresSeatRepo, bookingRepo *repositories.PostgresBookingRepo) *bookingService {
+func NewBookingService(db *gorm.DB, rdb *redis.Client, seatRepo ports.SeatRepository, bookingRepo ports.BookingRepository) *bookingService {
 	return &bookingService{
 		db:          db,
 		redis:       rdb,
@@ -28,46 +27,72 @@ func NewBookingService(db *gorm.DB, rdb *redis.Client, seatRepo *repositories.Po
 	}
 }
 
-func (s *bookingService) CreateBooking(userID uint, seatIDs []uint) (*domain.Booking, error) {
+// 1. เส้นทางแรก: จองรอชำระเงิน (LOCKED)
+func (s *bookingService) CreatePendingBooking(userID uint, seatIDs []uint) (*domain.Booking, error) {
 	ctx := context.Background()
 
-	// --- 🛡️ ด่านที่ 1: Redis Guard (คัดกรองคน 99.9% ออกไปตรงนี้) ---
-	// วนลูปเช็คว่ามีใครจองที่นั่งพวกนี้ใน Redis อยู่ไหม
+	// --- 🛡️ ด่านที่ 1: Redis Guard ---
 	for _, seatID := range seatIDs {
 		lockKey := fmt.Sprintf("lock:seat:%d", seatID)
-
-		// SETNX: ถ้ายังไม่มี key นี้ ให้สร้างและ return true (ชนะ)
-		// ถ้ามี key นี้อยู่แล้ว return false (แพ้)
-		// ตั้งเวลาหมดอายุ 10 วินาที (เผื่อระบบล่ม key จะได้ไม่ค้างตลอดไป)
 		success, err := s.redis.SetNX(ctx, lockKey, userID, 10*time.Second).Result()
-
 		if err != nil {
 			return nil, err
 		}
 		if !success {
-			// ถ้าแพ้ใน Redis ให้ดีดออกเลย ไม่ต้องไปกวน DB
 			return nil, fmt.Errorf("seat %d is currently being booked by someone else (Redis Block)", seatID)
 		}
-
-		// *ข้อควรระวัง: ในระบบจริง ถ้าจองหลายที่แล้วติดใบหลังๆ ต้องไปไล่ลบ Redis Key ของใบแรกๆ ออกด้วย (Compensating Transaction)
-		// แต่นี่เอา Concept หลักก่อนครับ
 	}
-	// -----------------------------------------------------------
-
-	// --- 🏰 ด่านที่ 2: Database Transaction (คนชนะเท่านั้นที่มาถึงตรงนี้) ---
-	// โค้ดส่วนนี้เหมือนเดิม 100% เพราะเราต้อง Lock DB เพื่อความชัวร์ (Consistency)
-	// แต่ภาระ DB จะเหลือน้อยมากๆ เพราะ Redis กั้นคนส่วนใหญ่ไว้แล้ว
 
 	var newBooking domain.Booking
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		// ... (โค้ดเดิมทั้งหมดของคุณ อยู่ในนี้) ...
-		// ...
-		// ...
+		var totalAmount float64
+		var bookingItems []domain.BookingItem
+		var firstEventID uint
+		expireTime := time.Now().Add(10 * time.Minute) // ล็อกใน DB ไว้ 10 นาที
+
+		for _, seatID := range seatIDs {
+			// Lock ที่นั่งใน DB
+			seat, err := s.seatRepo.GetSeatWithLock(tx, seatID)
+			if err != nil {
+				return fmt.Errorf("seat %d not found", seatID)
+			}
+
+			// เฉพาะที่นั่งว่างเท่านั้นที่จองได้
+			if seat.Status != "AVAILABLE" {
+				return fmt.Errorf("seat %d is not available (status: %s)", seatID, seat.Status)
+			}
+
+			firstEventID = seat.EventID
+			totalAmount += seat.Price
+
+			// อัปเดตสถานะเป็น LOCKED
+			seat.Status = "LOCKED"
+			seat.LockedBy = &userID
+			seat.LockExpiresAt = &expireTime
+			if err := tx.Save(seat).Error; err != nil {
+				return err
+			}
+
+			bookingItems = append(bookingItems, domain.BookingItem{
+				SeatID: seat.ID,
+			})
+		}
+
+		newBooking = domain.Booking{
+			UserID:      userID,
+			EventID:     firstEventID,
+			TotalAmount: totalAmount,
+			Status:      "PENDING",
+			Items:       bookingItems,
+		}
+
+		if err := s.bookingRepo.Create(tx, &newBooking); err != nil {
+			return err
+		}
 		return nil
 	})
 
-	// --- 🧹 ด่านที่ 3: Cleanup ---
-	// ไม่ว่าจะจองสำเร็จหรือไม่ ควรลบ Key ใน Redis ออก (หรือปล่อยให้มัน Expire เองก็ได้ถ้าขี้เกียจ แต่ลบเลยดีกว่า)
+	// Cleanup Redis Lock
 	for _, seatID := range seatIDs {
 		s.redis.Del(ctx, fmt.Sprintf("lock:seat:%d", seatID))
 	}
@@ -76,4 +101,48 @@ func (s *bookingService) CreateBooking(userID uint, seatIDs []uint) (*domain.Boo
 		return nil, err
 	}
 	return &newBooking, nil
+}
+
+// 2. เส้นทางที่สอง: ยืนยันการชำระเงิน (SOLD)
+func (s *bookingService) ConfirmPayment(bookingID uint) (*domain.Booking, error) {
+	var booking *domain.Booking
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 1. ดึงใบจองมาเช็ค
+		var err error
+		booking, err = s.bookingRepo.GetByID(bookingID)
+		if err != nil {
+			return fmt.Errorf("booking %d not found", bookingID)
+		}
+
+		if booking.Status != "PENDING" {
+			return fmt.Errorf("booking %d is already %s", bookingID, booking.Status)
+		}
+
+		// 2. อัปเดตสถานะที่นั่งทุกลูกค้าที่อยู่ในใบจองนี้เป็น SOLD
+		for _, item := range booking.Items {
+			seat, err := s.seatRepo.GetSeatWithLock(tx, item.SeatID)
+			if err != nil {
+				return err
+			}
+
+			seat.Status = "SOLD"
+			seat.LockExpiresAt = nil // เคลียร์วันหมดอายุ
+			if err := tx.Save(seat).Error; err != nil {
+				return err
+			}
+		}
+
+		// 3. อัปเดตสถานะใบจองเป็น PAID
+		booking.Status = "PAID"
+		if err := s.bookingRepo.Update(tx, booking); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return booking, nil
 }

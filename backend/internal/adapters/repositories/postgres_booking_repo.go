@@ -15,9 +15,24 @@ func NewPostgresBookingRepo(db *gorm.DB) *PostgresBookingRepo {
 
 // ฟังก์ชันสร้างใบจอง (รองรับ Transaction)
 func (r *PostgresBookingRepo) Create(tx *gorm.DB, booking *domain.Booking) error {
-	// ถ้าส่ง Transaction มาให้ใช้ Transaction, ถ้าไม่มีให้ใช้ DB ปกติ
 	if tx != nil {
 		return tx.Create(booking).Error
 	}
 	return r.db.Create(booking).Error
+}
+
+func (r *PostgresBookingRepo) GetByID(id uint) (*domain.Booking, error) {
+	var booking domain.Booking
+	// Preload Items เพื่อให้รู้ว่าจองที่นั่งไหนบ้าง
+	if err := r.db.Preload("Items").First(&booking, id).Error; err != nil {
+		return nil, err
+	}
+	return &booking, nil
+}
+
+func (r *PostgresBookingRepo) Update(tx *gorm.DB, booking *domain.Booking) error {
+	if tx != nil {
+		return tx.Save(booking).Error
+	}
+	return r.db.Save(booking).Error
 }

@@ -81,6 +81,7 @@ func main() {
 	// 7. ประกาศเส้นทาง API
 	api.Get("/events/:id", eventHandler.GetEvent)
 	api.Post("/bookings", bookingHandler.CreateBooking)
+	api.Post("/bookings/confirm", bookingHandler.ConfirmBooking)
 
 	// Start Server
 	fmt.Println("Server listening on :8080")
