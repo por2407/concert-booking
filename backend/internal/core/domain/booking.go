@@ -22,6 +22,7 @@ type Booking struct {
 
 	// Relation: ใบจอง 1 ใบ มีที่นั่งได้หลายที่ (Booking Items)
 	Items []BookingItem `gorm:"foreignKey:BookingID" json:"items"`
+	Event *Event        `gorm:"foreignKey:EventID" json:"event,omitempty"`
 }
 
 // 3. ตาราง BookingItems (รายละเอียดว่าจองที่นั่งไหนบ้าง)

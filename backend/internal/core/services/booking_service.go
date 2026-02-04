@@ -8,19 +8,18 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/ticket-backend/internal/core/domain"
 	"github.com/ticket-backend/internal/core/ports"
-	"gorm.io/gorm"
 )
 
 type bookingService struct {
-	db          *gorm.DB
+	txManager   ports.TransactionManager
 	redis       *redis.Client
 	seatRepo    ports.SeatRepository
 	bookingRepo ports.BookingRepository
 }
 
-func NewBookingService(db *gorm.DB, rdb *redis.Client, seatRepo ports.SeatRepository, bookingRepo ports.BookingRepository) *bookingService {
+func NewBookingService(txManager ports.TransactionManager, rdb *redis.Client, seatRepo ports.SeatRepository, bookingRepo ports.BookingRepository) *bookingService {
 	return &bookingService{
-		db:          db,
+		txManager:   txManager,
 		redis:       rdb,
 		seatRepo:    seatRepo,
 		bookingRepo: bookingRepo,
@@ -28,9 +27,7 @@ func NewBookingService(db *gorm.DB, rdb *redis.Client, seatRepo ports.SeatReposi
 }
 
 // 1. เส้นทางแรก: จองรอชำระเงิน (LOCKED)
-func (s *bookingService) CreatePendingBooking(userID uint, seatIDs []uint) (*domain.Booking, error) {
-	ctx := context.Background()
-
+func (s *bookingService) CreatePendingBooking(ctx context.Context, userID uint, seatIDs []uint) (*domain.Booking, error) {
 	// --- 🛡️ ด่านที่ 1: Redis Guard ---
 	for _, seatID := range seatIDs {
 		lockKey := fmt.Sprintf("lock:seat:%d", seatID)
@@ -44,7 +41,7 @@ func (s *bookingService) CreatePendingBooking(userID uint, seatIDs []uint) (*dom
 	}
 
 	var newBooking domain.Booking
-	err := s.db.Transaction(func(tx *gorm.DB) error {
+	err := s.txManager.WithTransaction(ctx, func(txCtx context.Context) error {
 		var totalAmount float64
 		var bookingItems []domain.BookingItem
 		var firstEventID uint
@@ -52,7 +49,7 @@ func (s *bookingService) CreatePendingBooking(userID uint, seatIDs []uint) (*dom
 
 		for _, seatID := range seatIDs {
 			// Lock ที่นั่งใน DB
-			seat, err := s.seatRepo.GetSeatWithLock(tx, seatID)
+			seat, err := s.seatRepo.GetSeatWithLock(txCtx, seatID)
 			if err != nil {
 				return fmt.Errorf("seat %d not found", seatID)
 			}
@@ -69,7 +66,7 @@ func (s *bookingService) CreatePendingBooking(userID uint, seatIDs []uint) (*dom
 			seat.Status = "LOCKED"
 			seat.LockedBy = &userID
 			seat.LockExpiresAt = &expireTime
-			if err := tx.Save(seat).Error; err != nil {
+			if err := s.seatRepo.Update(txCtx, seat); err != nil {
 				return err
 			}
 
@@ -86,7 +83,7 @@ func (s *bookingService) CreatePendingBooking(userID uint, seatIDs []uint) (*dom
 			Items:       bookingItems,
 		}
 
-		if err := s.bookingRepo.Create(tx, &newBooking); err != nil {
+		if err := s.bookingRepo.Create(txCtx, &newBooking); err != nil {
 			return err
 		}
 		return nil
@@ -104,12 +101,12 @@ func (s *bookingService) CreatePendingBooking(userID uint, seatIDs []uint) (*dom
 }
 
 // 2. เส้นทางที่สอง: ยืนยันการชำระเงิน (SOLD)
-func (s *bookingService) ConfirmPayment(bookingID uint) (*domain.Booking, error) {
+func (s *bookingService) ConfirmPayment(ctx context.Context, bookingID uint) (*domain.Booking, error) {
 	var booking *domain.Booking
-	err := s.db.Transaction(func(tx *gorm.DB) error {
+	err := s.txManager.WithTransaction(ctx, func(txCtx context.Context) error {
 		// 1. ดึงใบจองมาเช็ค
 		var err error
-		booking, err = s.bookingRepo.GetByID(bookingID)
+		booking, err = s.bookingRepo.GetByID(txCtx, bookingID)
 		if err != nil {
 			return fmt.Errorf("booking %d not found", bookingID)
 		}
@@ -120,21 +117,21 @@ func (s *bookingService) ConfirmPayment(bookingID uint) (*domain.Booking, error)
 
 		// 2. อัปเดตสถานะที่นั่งทุกลูกค้าที่อยู่ในใบจองนี้เป็น SOLD
 		for _, item := range booking.Items {
-			seat, err := s.seatRepo.GetSeatWithLock(tx, item.SeatID)
+			seat, err := s.seatRepo.GetSeatWithLock(txCtx, item.SeatID)
 			if err != nil {
 				return err
 			}
 
 			seat.Status = "SOLD"
 			seat.LockExpiresAt = nil // เคลียร์วันหมดอายุ
-			if err := tx.Save(seat).Error; err != nil {
+			if err := s.seatRepo.Update(txCtx, seat); err != nil {
 				return err
 			}
 		}
 
 		// 3. อัปเดตสถานะใบจองเป็น PAID
 		booking.Status = "PAID"
-		if err := s.bookingRepo.Update(tx, booking); err != nil {
+		if err := s.bookingRepo.Update(txCtx, booking); err != nil {
 			return err
 		}
 
@@ -145,4 +142,12 @@ func (s *bookingService) ConfirmPayment(bookingID uint) (*domain.Booking, error)
 		return nil, err
 	}
 	return booking, nil
+}
+
+func (s *bookingService) GetHistory(ctx context.Context, userID uint) ([]domain.Booking, error) {
+	bookings, err := s.bookingRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return bookings, nil
 }

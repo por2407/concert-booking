@@ -1,16 +1,24 @@
 package ports
 
-import "github.com/ticket-backend/internal/core/domain"
+import (
+	"context"
 
-// BookingService คือข้อตกลงว่า "ระบบจอง" ต้องทำอะไรได้บ้าง
-// (ในที่นี้คือ ต้องมีฟังก์ชัน CreateBooking)
+	"github.com/ticket-backend/internal/core/domain"
+)
+
+type AuthService interface {
+	Register(ctx context.Context, email, password string) (*domain.User, error)
+	Login(ctx context.Context, email, password string) (string, error) // Returns JWT token
+}
+
 type BookingService interface {
-	CreatePendingBooking(userID uint, seatIDs []uint) (*domain.Booking, error)
-	ConfirmPayment(bookingID uint) (*domain.Booking, error)
+	CreatePendingBooking(ctx context.Context, userID uint, seatIDs []uint) (*domain.Booking, error)
+	ConfirmPayment(ctx context.Context, bookingID uint) (*domain.Booking, error)
+	GetHistory(ctx context.Context, userID uint) ([]domain.Booking, error)
 }
 
 type EventService interface {
-	SeedData() error
-	// เพิ่มฟังก์ชันดึงข้อมูล
-	GetEventInfo(id uint) (*domain.Event, error)
+	CreateEvent(ctx context.Context, name string, location string) (*domain.Event, error)
+	GetEventInfo(ctx context.Context, id uint) (*domain.Event, error)
+	GetAllEvents(ctx context.Context) ([]domain.Event, error)
 }

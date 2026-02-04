@@ -17,7 +17,7 @@ services:
       - ticket_network
     restart: unless-stopped
 
-  # --- 2. PgAdmin Service (ตัวจัดการ DB) ---
+  # --- 2. PgAdmin Service ---
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: ticket_pgadmin_container
@@ -34,7 +34,7 @@ services:
       - ticket_network
     restart: unless-stopped
 
-  # --- 3. Redis Service (เพิ่มใหม่ตามแผน!) ---
+  # --- 3. Redis Service ---
   ticket-redis:
     image: redis:alpine
     container_name: ticket_redis_container
@@ -50,11 +50,11 @@ services:
   # --- 4. API Service (Go Backend) ---
   ticket-api:
     build:
-      context: .              # จุดที่แก้ 1: ใช้ . เพราะไฟล์ Dockerfile.dev อยู่ที่เดียวกับ docker-compose
-      dockerfile: Dockerfile.dev # จุดที่แก้ 2: ระบุชื่อไฟล์ Dockerfile ให้ถูก
+      context: ./backend
+      dockerfile: Dockerfile.dev
     container_name: ticket_api_container
     ports:
-      - "8081:8080"           # เข้าเว็บผ่าน http://localhost:8081
+      - "8081:8080"
     environment:
       - DB_HOST=ticket-db
       - DB_USER=ticket_admin
@@ -67,10 +67,27 @@ services:
       - ticket-db
       - ticket-redis
     volumes:
-      - .:/app                # จุดที่แก้ 3: Mount โฟลเดอร์ปัจจุบัน (.) เข้าไปที่ /app
-      - /app/tmp              # จุดสำคัญ: ไม่ต้อง Sync โฟลเดอร์ tmp กลับมา (ป้องกัน Permission error)
+      - ./backend:/app
+      - /app/tmp
     networks:
       - ticket_network
+
+  # --- 5. Frontend Service (Next.js) ---
+  ticket-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ticket_frontend_container
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8081/api
+      - INTERNAL_API_URL=http://ticket-api:8080/api
+    depends_on:
+      - ticket-api
+    networks:
+      - ticket_network
+    restart: unless-stopped
 
 volumes:
   ticket_pg_data:

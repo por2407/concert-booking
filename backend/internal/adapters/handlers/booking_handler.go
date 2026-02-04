@@ -14,7 +14,6 @@ func NewBookingHandler(s ports.BookingService) *BookingHandler {
 }
 
 type createBookingRequest struct {
-	UserId  uint   `json:"user_id"`
 	SeatIds []uint `json:"seat_ids"`
 }
 
@@ -29,7 +28,8 @@ func (h *BookingHandler) CreateBooking(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	booking, err := h.bookingService.CreatePendingBooking(req.UserId, req.SeatIds)
+	userId := c.Locals("user_id").(uint)
+	booking, err := h.bookingService.CreatePendingBooking(c.UserContext(), userId, req.SeatIds)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -47,7 +47,7 @@ func (h *BookingHandler) ConfirmBooking(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	booking, err := h.bookingService.ConfirmPayment(req.BookingId)
+	booking, err := h.bookingService.ConfirmPayment(c.UserContext(), req.BookingId)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -56,4 +56,15 @@ func (h *BookingHandler) ConfirmBooking(c *fiber.Ctx) error {
 		"message": "Payment confirmed, seats are now SOLD",
 		"booking": booking,
 	})
+}
+
+func (h *BookingHandler) GetHistory(c *fiber.Ctx) error {
+	// 1. ดึง User ID ออกมาจาก Context (ที่ถูกเซ็ตไว้โดย JWT Middleware)
+	userID := c.Locals("user_id").(uint)
+	bookingItems, err := h.bookingService.GetHistory(c.UserContext(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"booking_items": bookingItems})
 }

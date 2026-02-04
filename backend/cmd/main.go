@@ -6,6 +6,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/ticket-backend/internal/adapters/handlers"
+	"github.com/ticket-backend/internal/adapters/middleware"
 	"github.com/ticket-backend/internal/adapters/repositories"
 	"github.com/ticket-backend/internal/core/domain"
 	"github.com/ticket-backend/internal/core/services"
@@ -50,23 +51,22 @@ func main() {
 	)
 
 	// 3. เตรียมคนงาน (Repo)
+	userRepo := repositories.NewPostgresUserRepo(db)
 	eventRepo := repositories.NewPostgresEventRepo(db)
 	seatRepo := repositories.NewPostgresSeatRepo(db)
 	bookingRepo := repositories.NewPostgresBookingRepo(db)
+	txManager := repositories.NewGormTransactionManager(db)
 
 	// 4. เตรียมผู้จัดการ (Service)
-	svc := services.NewEventService(eventRepo, seatRepo)
-	bookingService := services.NewBookingService(db, rdb, seatRepo, bookingRepo)
+	jwtSecret := "super-secret-key" // ในงานจริงควรใช้แปรสภาพแวดล้อม (Env Var)
+	authService := services.NewAuthService(userRepo, jwtSecret)
+	svc := services.NewEventService(txManager, eventRepo, seatRepo)
+	bookingService := services.NewBookingService(txManager, rdb, seatRepo, bookingRepo)
 
 	// Handlers (สร้างคนรับแขก)
+	authHandler := handlers.NewAuthHandler(authService)
 	eventHandler := handlers.NewEventHandler(svc)
 	bookingHandler := handlers.NewBookingHandler(bookingService)
-
-	// 5. สั่งเสกข้อมูล (ทำงานเบื้องหลัง)
-	go func() {
-		fmt.Println("⏳ Seeding data...")
-		svc.SeedData()
-	}()
 
 	// 6. รัน Server
 	app := fiber.New()
@@ -78,10 +78,23 @@ func main() {
 
 	api := app.Group("/api")
 
-	// 7. ประกาศเส้นทาง API
+	// --- Auth Routes ---
+	auth := api.Group("/auth")
+	auth.Post("/register", authHandler.Register)
+	auth.Post("/login", authHandler.Login)
+
+	// --- Public Routes ---
+	api.Get("/events", eventHandler.GetAllEvents)
 	api.Get("/events/:id", eventHandler.GetEvent)
-	api.Post("/bookings", bookingHandler.CreateBooking)
-	api.Post("/bookings/confirm", bookingHandler.ConfirmBooking)
+
+	// --- Admin Routes (Protect หรือไม่ตามสะดวก แต่อันนี้ตัวอย่าง) ---
+	api.Post("/events/create", eventHandler.CreateEvent)
+
+	// --- Protected Routes (ต้อง Login ก่อน) ---
+	protected := api.Group("/", middleware.JWTMiddleware(jwtSecret))
+	protected.Post("/bookings", bookingHandler.CreateBooking)
+	protected.Post("/bookings/confirm", bookingHandler.ConfirmBooking)
+	protected.Get("/bookings/history", bookingHandler.GetHistory)
 
 	// Start Server
 	fmt.Println("Server listening on :8080")
